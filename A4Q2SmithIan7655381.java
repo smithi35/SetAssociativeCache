@@ -72,14 +72,9 @@ public class A4Q2SmithIan7655381 {
 				//System.out.println("Hit = " + hit);
 				hits += hit;
 				
-				if (count % 100000 == 0) {
-					System.out.println("Iteration #" + count);
-				}
-				
 				count++;
 			}
 			in.close();
-			System.out.println(hits);
 			hitRate = (double)hits / count;
 		} catch (IOException ioe) {
 			System.out.println(ioe.getMessage());
@@ -90,7 +85,8 @@ public class A4Q2SmithIan7655381 {
 }
 
 class Cache {
-	private int words;
+	private int wordsPerLine;
+	private int setCount;
 	private int lines;
 	private int linesPerSet;
 	private Set[] sets;
@@ -99,20 +95,24 @@ class Cache {
 	private int tShift;
 	
 	public Cache(int bytes, int totalLines, int lPS) {
-		words = bytes/4;
+		wordsPerLine = bytes/4;
 		linesPerSet = lPS;
 		
-		int setCount = totalLines / linesPerSet;
+		setCount = totalLines / linesPerSet;
 		sets = new Set[setCount];
 		lines = totalLines;
 		
-		double index = Math.log10(words) / Math.log10(2.0);
+		// word addresses, so we need bits for displacement within a line, a set index, and for a tag
+		// to get the index, we need to right-shift until the displacement bits are gone, and the mod by the number of sets
+		double index = Math.log10(wordsPerLine) / Math.log10(2.0);
 		iShift = (int) index;
-		double tag = Math.log10(linesPerSet) / Math.log10(2.0);
+		
+		// to get the tag, we need to right-shift until both the index and displacement bits are gone
+		double tag = Math.log10(setCount) / Math.log10(2.0);
 		tShift = (int) (tag+index);
 		
 		for (int i = 0; i < setCount; i++) {
-			sets[i] = new Set(linesPerSet, words);
+			sets[i] = new Set(linesPerSet, wordsPerLine);
 		}
 	}
 	
@@ -121,67 +121,28 @@ class Cache {
 	// the address into the cache
 	public int process(int instruction, int address) {
 		int hit = 0;
+		// System.out.println(address);
 		
-		int offset = instruction % words;
-		// System.out.println(offset);
+		int offset = address % wordsPerLine;
+		// System.out.println("offset = address % wordsPerLine = " + address + " % " + wordsPerLine + " = " + offset);
 		
 		// get index value
 		int index = address >> iShift;
-		index = index % linesPerSet;
-		// System.out.println(index);
+		index = index % setCount;
+		// System.out.println("index = address >> iShift % setCount = " + address + " >> " + iShift + " % " + setCount + " = " + index);
 		
 		// get tag value
 		int tag = address >> tShift;
-		// System.out.println(tag);
+		// System.out.println("tag = address >> tShift = " + address + " >> " + tShift + " = " + tag);
 		
-		// first search for the item
-		for (int i = 0; i < sets.length; i++) {
-			if (sets[i].isPresent(index, offset, tag)) {
-				hit = 1;
-				moveToTop(index, offset, tag);
-				break;
-			}
+		if (sets[index].isPresent(tag)) {
+			// System.out.println(tag + " was present in set[" + index + "]");
+			hit = 1;
 		}
+		sets[index].insertAtTop(tag);
+		// System.out.println();
 		
-		if (hit == 0) {
-			insertAtTop(index, offset, tag);
-		}
-
 		return hit;
-	}
-	
-	// take this address and move it to the first set, shifting the other items
-	// with the same index and offset into lower sets
-	// assumes that tag is present somewhere already
-	private void moveToTop(int index, int offset, int tag) {
-		int old = tag;
-		
-		for (int i = 0; i < sets.length - 1; i++) {
-			int temp = sets[i].replace(index, offset, old);
-			
-			if (temp == tag) {
-				break;
-			}
-			
-			old = temp;
-		}
-	}
-	
-	// tag is not present in any sets, so it will be placed at the top
-	// and then the other similar items will be pushed down until a -1
-	// is found
-	private void insertAtTop(int index, int offset, int tag) {
-		int old = tag;
-		
-		for (int i = 0; i < sets.length; i++) {
-			int temp = sets[i].replace(index, offset, old);
-			
-			if (temp == -1) {
-				break;
-			} else {
-				old = temp;
-			}
-		}
 	}
 }
 
@@ -189,57 +150,79 @@ class Set
 {
 	private int lines;
 	private int words;
-	private int[][] array;
+	private Line[] array;
 	
 	public Set(int l, int w) {
 		lines = l;
 		words = w;
-		array = new int[lines][words];
+		array = new Line[lines];
 		
 		for (int i = 0; i < array.length; i++) {
-			for (int j = 0; j < array[i].length; j++) {
-				array[i][j] = -1;
-			}
+			array[i] = new Line();
 		}
 	}
 	
-	public boolean isPresent(int index, int offset, int tag) {
+	// return true if the tag can be found in one of the set lines
+	public boolean isPresent(int tag) {
 		boolean search = false;
 		
-		if (array[index][offset] == tag) {
-			search = true;
+		for (int i = 0; i < lines && !search; i++) {
+			if (array[i].getTag() == tag) {
+				search = true;
+			}
 		}
 		
 		return search;
 	}
 	
-	public boolean isAvailable(int index, int offset) {
-		boolean available = false;
+	// tag is not present in any lines, so it will be placed at the top
+	// and then the other similar items will be pushed down until a -1
+	// is found
+	public void insertAtTop(int tag) {
+		int old = tag;
 		
-		if (array[index][offset] == -1) {
-			available = true;
+		/*
+		for (int i = 0; i < array.length; i++) {
+			System.out.print(array[i].getTag() + " ");
 		}
+		System.out.println();
+		*/
+		
+		for (int i = 0; i < array.length; i++) {
+			int temp = array[i].getTag();
+			array[i].setTag(old);
+			
+			if (temp == -1) {
+				break;
+			} else {
+				old = temp;
+			}
+		}
+		
+		/*
+		for (int i = 0; i < array.length; i++) {
+			System.out.print(array[i].getTag() + " ");
+		}
+		System.out.println();
+		*/
+	}
+}
+
+class Line {
+	private int tag;
+	
+	public Line() {
+		tag = -1;
+	}
+	
+	public boolean isAvailable() {
+		boolean available = tag == Integer.MIN_VALUE;
 		
 		return available;
 	}
 	
-	public boolean insert(int index, int offset, int tag) {
-		boolean success = false;
-		
-		if (array[index][offset] == -1) {
-			array[index][offset] = tag;
-			success = true;
-		}
-		
-		return success;
-	}
-	
-	// places a new tag into the array, and returns the old one
-	public int replace(int index, int offset, int tag) {
-		int temp = array[index][offset];
-		
-		array[index][offset] = tag;
-		
-		return temp;
+	public int getTag() { return tag;}
+	public void setTag(int t) {
+		tag = t;
 	}
 }
